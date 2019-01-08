@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/adamdecaf/namecheap"
 	"github.com/hashicorp/terraform/helper/schema"
@@ -12,8 +13,10 @@ import (
 // We need a mutex here because of the underlying api
 var mutex = &sync.Mutex{}
 
-const ncDefaultTTL int = 1800
+// This is the "Auto" TTL setting in Namecheap
+const ncDefaultTTL int = 1799
 const ncDefaultMXPref int = 10
+const ncDefaultTimeout time.Duration = 30
 
 func resourceNameCheapRecord() *schema.Resource {
 	return &schema.Resource{
@@ -22,34 +25,41 @@ func resourceNameCheapRecord() *schema.Resource {
 		Read:   resourceNameCheapRecordRead,
 		Delete: resourceNameCheapRecordDelete,
 
+		Timeouts: &schema.ResourceTimeout{
+			Create: schema.DefaultTimeout(ncDefaultTimeout * time.Second),
+			Update: schema.DefaultTimeout(ncDefaultTimeout * time.Second),
+			Read:   schema.DefaultTimeout(ncDefaultTimeout * time.Second),
+			Delete: schema.DefaultTimeout(ncDefaultTimeout * time.Second),
+		},
+
 		Schema: map[string]*schema.Schema{
-			"domain": &schema.Schema{
+			"domain": {
 				Type:     schema.TypeString,
 				Required: true,
 			},
-			"name": &schema.Schema{
+			"name": {
 				Type:     schema.TypeString,
 				Required: true,
 			},
-			"type": &schema.Schema{
+			"type": {
 				Type:     schema.TypeString,
 				Required: true,
 			},
-			"address": &schema.Schema{
+			"address": {
 				Type:     schema.TypeString,
 				Required: true,
 			},
-			"mx_pref": &schema.Schema{
+			"mx_pref": {
 				Type:     schema.TypeInt,
 				Optional: true,
-				Default:  10,
+				Default:  ncDefaultMXPref,
 			},
-			"ttl": &schema.Schema{
+			"ttl": {
 				Type:     schema.TypeInt,
 				Optional: true,
-				Default:  1800,
+				Default:  ncDefaultTTL,
 			},
-			"hostname": &schema.Schema{
+			"hostname": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
@@ -59,7 +69,6 @@ func resourceNameCheapRecord() *schema.Resource {
 
 func resourceNameCheapRecordCreate(d *schema.ResourceData, meta interface{}) error {
 	mutex.Lock()
-	defer mutex.Unlock()
 
 	client := meta.(*namecheap.Client)
 	record := namecheap.Record{
@@ -73,22 +82,24 @@ func resourceNameCheapRecordCreate(d *schema.ResourceData, meta interface{}) err
 	_, err := client.AddRecord(d.Get("domain").(string), &record)
 
 	if err != nil {
+		mutex.Unlock()
 		return fmt.Errorf("Failed to create namecheap Record: %s", err)
 	}
 	hashId := client.CreateHash(&record)
 	d.SetId(strconv.Itoa(hashId))
 
+	mutex.Unlock()
 	return resourceNameCheapRecordRead(d, meta)
 }
 
 func resourceNameCheapRecordUpdate(d *schema.ResourceData, meta interface{}) error {
 	mutex.Lock()
-	mutex.Unlock()
 
 	client := meta.(*namecheap.Client)
 	domain := d.Get("domain").(string)
 	hashId, err := strconv.Atoi(d.Id())
 	if err != nil {
+		mutex.Unlock()
 		return fmt.Errorf("Failed to parse id: %s", err)
 	}
 	record := namecheap.Record{
@@ -100,10 +111,13 @@ func resourceNameCheapRecordUpdate(d *schema.ResourceData, meta interface{}) err
 	}
 	err = client.UpdateRecord(domain, hashId, &record)
 	if err != nil {
+		mutex.Unlock()
 		return fmt.Errorf("Failed to update namecheap record: %s", err)
 	}
 	newHashId := client.CreateHash(&record)
 	d.SetId(strconv.Itoa(newHashId))
+
+	mutex.Unlock()
 	return resourceNameCheapRecordRead(d, meta)
 }
 
@@ -133,7 +147,6 @@ func resourceNameCheapRecordRead(d *schema.ResourceData, meta interface{}) error
 	} else {
 		d.Set("hostname", fmt.Sprintf("%s.%s", record.Name, d.Get("domain").(string)))
 	}
-
 	return nil
 }
 
@@ -152,6 +165,5 @@ func resourceNameCheapRecordDelete(d *schema.ResourceData, meta interface{}) err
 	if err != nil {
 		return fmt.Errorf("Failed to delete namecheap record: %s", err)
 	}
-
 	return nil
 }
